@@ -14,6 +14,7 @@ use std::{
   rc::{Rc, Weak},
 };
 
+use crate::platform::macos::PumpStatus;
 use crossbeam_channel::{self as channel, Receiver, Sender};
 use objc2::{msg_send, rc::Retained};
 use objc2_app_kit::{NSApp, NSApplication, NSEventModifierFlags, NSEventSubtype, NSEventType};
@@ -242,6 +243,65 @@ impl<T> EventLoop<T> {
     drop(self._callback.take());
 
     exit_code
+  }
+
+  pub fn pump_events<F>(&mut self, callback: F) -> PumpStatus
+  where
+    F: FnMut(Event<'_, T>, &RootWindowTarget<T>, &mut ControlFlow),
+  {
+    // This follows the same callback-lifetime strategy as run_return().
+    let callback = unsafe {
+      mem::transmute::<
+        Rc<RefCell<dyn FnMut(Event<'_, T>, &RootWindowTarget<T>, &mut ControlFlow)>>,
+        Rc<RefCell<dyn FnMut(Event<'_, T>, &RootWindowTarget<T>, &mut ControlFlow)>>,
+      >(Rc::new(RefCell::new(callback)))
+    };
+
+    self._callback = Some(Rc::clone(&callback));
+
+    let mtm = MainThreadMarker::new().unwrap();
+
+    let status = unsafe {
+      let _pool = NSAutoreleasePool::new();
+      let app = NSApp(mtm);
+
+      // AppState receives only a weak reference. The event loop retains the
+      // callback through self._callback until this pump has completed.
+      let weak_callback: Weak<_> = Rc::downgrade(&callback);
+      mem::drop(callback);
+
+      AppState::set_callback(weak_callback, Rc::clone(&self.window_target));
+
+      // Ask AppKit to return after the next complete event-loop cycle.
+      // This does not modify ControlFlow.
+      AppState::request_pump_stop();
+
+      let () = msg_send![&app, run];
+
+      // The request should normally have been consumed by AppState::cleared().
+      // Clear it defensively in case NSApplication returned for another reason.
+      AppState::clear_pump_stop();
+
+      if let Some(panic) = self.panic_info.take() {
+        AppState::clear_callback();
+        drop(self._callback.take());
+        resume_unwind(panic);
+      }
+
+      if AppState::should_exit() {
+        // A user callback requested a real ControlFlow::Exit.
+        // Emit LoopDestroyed and return the actual exit code.
+        PumpStatus::Exit(AppState::exit())
+      } else {
+        // Temporary pump return. Do not emit LoopDestroyed.
+        AppState::clear_callback();
+        PumpStatus::Continue
+      }
+    };
+
+    drop(self._callback.take());
+
+    status
   }
 
   pub fn create_proxy(&self) -> Proxy<T> {

@@ -10,7 +10,8 @@ use objc2_foundation::NSObject;
 
 use crate::{
   dpi::{LogicalSize, Position},
-  event_loop::{EventLoop, EventLoopWindowTarget},
+  event::Event,
+  event_loop::{ControlFlow, EventLoop, EventLoopWindowTarget},
   monitor::MonitorHandle,
   platform_impl::{get_aux_state_mut, set_badge_label, set_dock_visibility, Parent},
   window::{Window, WindowBuilder},
@@ -165,6 +166,39 @@ impl WindowExtMacOS for Window {
   #[inline]
   fn set_badge_label(&self, label: Option<String>) {
     self.window.set_badge_label(label);
+  }
+}
+
+/// Result of pumping one macOS event-loop cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PumpStatus {
+  /// The event loop remains active and may be pumped again.
+  Continue,
+
+  /// The application requested a real event-loop exit.
+  Exit(i32),
+}
+
+/// Additional event-loop functionality for externally driven applications.
+///
+/// Unlike `run_return`, this does not treat every return to the caller as
+/// destruction of the Tao event loop.
+pub trait EventLoopExtPumpEvents {
+  type UserEvent;
+
+  fn pump_events<F>(&mut self, event_handler: F) -> PumpStatus
+  where
+    F: FnMut(Event<'_, Self::UserEvent>, &EventLoopWindowTarget<Self::UserEvent>, &mut ControlFlow);
+}
+
+impl<T> EventLoopExtPumpEvents for EventLoop<T> {
+  type UserEvent = T;
+
+  fn pump_events<F>(&mut self, event_handler: F) -> PumpStatus
+  where
+    F: FnMut(Event<'_, Self::UserEvent>, &EventLoopWindowTarget<Self::UserEvent>, &mut ControlFlow),
+  {
+    self.event_loop.pump_events(event_handler)
   }
 }
 

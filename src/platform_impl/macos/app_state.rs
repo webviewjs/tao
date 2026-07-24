@@ -131,6 +131,7 @@ struct Handler {
   pending_events: Mutex<VecDeque<EventWrapper>>,
   pending_redraw: Mutex<Vec<WindowId>>,
   waker: Mutex<EventLoopWaker>,
+  pump_stop_requested: AtomicBool,
 }
 
 unsafe impl Send for Handler {}
@@ -254,6 +255,18 @@ impl Handler {
       }
     }
   }
+
+  fn request_pump_stop(&self) {
+    self.pump_stop_requested.store(true, Ordering::Release);
+  }
+
+  fn take_pump_stop(&self) -> bool {
+    self.pump_stop_requested.swap(false, Ordering::AcqRel)
+  }
+
+  fn clear_pump_stop(&self) {
+    self.pump_stop_requested.store(false, Ordering::Release);
+  }
 }
 
 pub enum AppState {}
@@ -267,6 +280,22 @@ impl AppState {
       callback,
       window_target,
     }));
+  }
+
+  pub fn request_pump_stop() {
+    HANDLER.request_pump_stop();
+  }
+
+  pub fn clear_pump_stop() {
+    HANDLER.clear_pump_stop();
+  }
+
+  pub fn should_exit() -> bool {
+    HANDLER.should_exit()
+  }
+
+  pub fn clear_callback() {
+    HANDLER.callback.lock().unwrap().take();
   }
 
   pub fn exit() -> i32 {
@@ -400,13 +429,19 @@ impl AppState {
     }
     HANDLER.handle_nonuser_event(EventWrapper::StaticEvent(Event::RedrawEventsCleared));
     HANDLER.set_in_callback(false);
-    if HANDLER.should_exit() {
+    let should_exit = HANDLER.should_exit();
+    let should_stop_pump = HANDLER.take_pump_stop();
+
+    if should_exit || should_stop_pump {
       unsafe {
         let mtm = MainThreadMarker::new().unwrap();
         let app = NSApp(mtm);
         let _pool = NSAutoreleasePool::new();
+
         let () = msg_send![&app, stop: nil];
-        // To stop event loop immediately, we need to post some event here.
+
+        // NSApplication::stop does not necessarily take effect until another
+        // event is received.
         post_dummy_event(&app);
       };
     }
