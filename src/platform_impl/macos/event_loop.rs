@@ -232,7 +232,9 @@ impl<T> EventLoop<T> {
       mem::drop(callback);
 
       AppState::set_callback(weak_cb, Rc::clone(&self.window_target));
+      super::app_state::pump_trace(format_args!("NSApplication::run entry mode=blocking"));
       let () = msg_send![&app, run];
+      super::app_state::pump_trace(format_args!("NSApplication::run return mode=blocking"));
 
       if let Some(panic) = self.panic_info.take() {
         drop(self._callback.take());
@@ -249,6 +251,8 @@ impl<T> EventLoop<T> {
   where
     F: FnMut(Event<'_, T>, &RootWindowTarget<T>, &mut ControlFlow),
   {
+    super::app_state::next_pump_iteration();
+    super::app_state::pump_trace(format_args!("pump_events begin"));
     // This follows the same callback-lifetime strategy as run_return().
     let callback = unsafe {
       mem::transmute::<
@@ -275,7 +279,9 @@ impl<T> EventLoop<T> {
       // Later pumps: run until redraw or just before AppKit waits.
       AppState::prepare_pump();
 
+      super::app_state::pump_trace(format_args!("NSApplication::run entry mode=pump"));
       let () = msg_send![&app, run];
+      super::app_state::pump_trace(format_args!("NSApplication::run return mode=pump"));
 
       AppState::clear_pump_state();
 
@@ -294,6 +300,7 @@ impl<T> EventLoop<T> {
     };
 
     drop(self._callback.take());
+    super::app_state::pump_trace(format_args!("pump_events return status={status:?}"));
 
     status
   }

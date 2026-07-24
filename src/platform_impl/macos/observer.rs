@@ -160,6 +160,7 @@ extern "C" fn control_flow_begin_handler(
       #[allow(non_upper_case_globals)]
       match activity {
         kCFRunLoopAfterWaiting => {
+          super::app_state::pump_trace(format_args!("observer activity=after_wait"));
           //trace!("Triggered `CFRunLoopAfterWaiting`");
           AppState::wakeup(panic_info);
           //trace!("Completed `CFRunLoopAfterWaiting`");
@@ -183,11 +184,12 @@ extern "C" fn control_flow_end_handler(
       #[allow(non_upper_case_globals)]
       match activity {
         kCFRunLoopBeforeWaiting => {
+          super::app_state::pump_trace(format_args!("observer activity=before_wait order={}", CFIndex::MAX));
           //trace!("Triggered `CFRunLoopBeforeWaiting`");
           AppState::cleared(panic_info);
           //trace!("Completed `CFRunLoopBeforeWaiting`");
         }
-        kCFRunLoopExit => (), //unimplemented!(), // not expected to ever happen
+        kCFRunLoopExit => super::app_state::pump_trace(format_args!("observer activity=exit")),
         _ => unreachable!(),
       }
     });

@@ -123,9 +123,11 @@ extern "C" fn dealloc(this: &Object, _: Sel) {
 }
 
 extern "C" fn did_finish_launching(this: &Object, _: Sel, _: id) {
+  super::app_state::pump_trace(format_args!("delegate applicationDidFinishLaunching entered"));
   trace!("Triggered `applicationDidFinishLaunching`");
   AppState::launched(this);
   trace!("Completed `applicationDidFinishLaunching`");
+  super::app_state::pump_trace(format_args!("delegate applicationDidFinishLaunching returned"));
 }
 
 extern "C" fn application_will_terminate(_: &Object, _: Sel, _: id) {
