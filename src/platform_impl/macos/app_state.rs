@@ -10,8 +10,8 @@ use std::{
   mem,
   rc::{Rc, Weak},
   sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    Mutex, MutexGuard, OnceLock,
+    atomic::{AtomicBool, Ordering},
+    Mutex, MutexGuard,
   },
   time::Instant,
 };
@@ -43,25 +43,6 @@ use crate::{
 use super::set_dock_visibility;
 
 static HANDLER: Lazy<Handler> = Lazy::new(|| Default::default());
-static TRACE_START: OnceLock<Instant> = OnceLock::new();
-static PUMP_ITERATION: AtomicU64 = AtomicU64::new(0);
-
-pub fn pump_trace(message: fmt::Arguments<'_>) {
-  if std::env::var_os("TAO_MACOS_PUMP_TRACE").is_none() {
-    return;
-  }
-  let elapsed = TRACE_START.get_or_init(Instant::now).elapsed();
-  eprintln!(
-    "[{:.3}ms][pump={}][{:?}] {message}",
-    elapsed.as_secs_f64() * 1000.0,
-    PUMP_ITERATION.load(Ordering::Acquire),
-    std::thread::current().id(),
-  );
-}
-
-pub fn next_pump_iteration() {
-  PUMP_ITERATION.fetch_add(1, Ordering::AcqRel);
-}
 
 impl<'a, Never> Event<'a, Never> {
   fn userify<T: 'static>(self) -> Event<'a, T> {
@@ -327,35 +308,6 @@ impl Handler {
 pub enum AppState {}
 
 impl AppState {
-  pub fn trace_state(label: &str) {
-    if std::env::var_os("TAO_MACOS_PUMP_TRACE").is_none() {
-      return;
-    }
-    let callback = HANDLER.callback.lock().unwrap().is_some();
-    let events = HANDLER.events().len();
-    let redraws = HANDLER.redraw().len();
-    let launched = HANDLER.is_ready();
-    let in_callback = HANDLER.get_in_callback();
-    let control_flow = *HANDLER.control_flow.lock().unwrap();
-    let (running, key, visible) = unsafe {
-      let mtm = MainThreadMarker::new().unwrap();
-      let app = NSApp(mtm);
-      let running = app.isRunning();
-      if let Some(window) = app.keyWindow() {
-        (running, true, window.isVisible())
-      } else {
-        (running, false, false)
-      }
-    };
-    pump_trace(format_args!(
-      "{label} handler={callback} launched={launched} running={running} in_callback={in_callback} events={events} redraws={redraws} control_flow={control_flow:?} key={key} visible={visible} stop=[launch:{},before:{},after:{},redraw:{}]",
-      HANDLER.stop_on_launch.load(Ordering::Acquire),
-      HANDLER.stop_before_wait.load(Ordering::Acquire),
-      HANDLER.stop_after_wait.load(Ordering::Acquire),
-      HANDLER.stop_on_redraw.load(Ordering::Acquire),
-    ));
-  }
-
   pub fn set_callback<T>(
     callback: Weak<RefCell<dyn FnMut(Event<'_, T>, &RootWindowTarget<T>, &mut ControlFlow)>>,
     window_target: Rc<RootWindowTarget<T>>,
@@ -364,17 +316,14 @@ impl AppState {
       callback,
       window_target,
     }));
-    Self::trace_state("callback installed");
   }
 
   pub fn prepare_pump() {
     HANDLER.prepare_pump();
-    Self::trace_state("pump prepared");
   }
 
   pub fn clear_pump_state() {
     HANDLER.clear_pump_state();
-    Self::trace_state("pump state cleared");
   }
 
   pub fn is_launched() -> bool {
@@ -386,9 +335,7 @@ impl AppState {
   }
 
   pub fn clear_callback() {
-    Self::trace_state("callback removing");
     HANDLER.callback.lock().unwrap().take();
-    Self::trace_state("callback removed");
   }
 
   pub fn exit() -> i32 {
@@ -404,7 +351,6 @@ impl AppState {
   }
 
   pub fn launched(app_delegate: &Object) {
-    Self::trace_state("applicationDidFinishLaunching begin");
     apply_activation_policy(app_delegate);
 
     unsafe {
@@ -429,10 +375,8 @@ impl AppState {
     HANDLER.set_in_callback(false);
 
     if HANDLER.take_stop_on_launch() {
-      pump_trace(format_args!("pump stop reason=launch"));
       stop_app_immediately();
     }
-    Self::trace_state("applicationDidFinishLaunching end");
   }
 
   pub fn open_urls(urls: Vec<url::Url>) {
@@ -446,7 +390,6 @@ impl AppState {
   }
 
   pub fn wakeup(panic_info: Weak<PanicInfo>) {
-    Self::trace_state("CFRunLoopAfterWaiting wakeup begin");
     let panic_info = panic_info
       .upgrade()
       .expect("The panic info must exist here. This failure indicates a developer error.");
@@ -456,12 +399,10 @@ impl AppState {
       || !HANDLER.has_callback()
       || HANDLER.get_in_callback()
     {
-      Self::trace_state("CFRunLoopAfterWaiting wakeup skipped");
       return;
     }
 
     if HANDLER.take_stop_after_wait() {
-      pump_trace(format_args!("pump stop reason=after_wait"));
       stop_app_immediately();
       return;
     }
@@ -491,7 +432,6 @@ impl AppState {
     HANDLER.set_in_callback(true);
     HANDLER.handle_nonuser_event(EventWrapper::StaticEvent(Event::NewEvents(cause)));
     HANDLER.set_in_callback(false);
-    Self::trace_state("CFRunLoopAfterWaiting wakeup end");
   }
 
   // This is called from multiple threads at present
@@ -500,7 +440,6 @@ impl AppState {
     if !pending_redraw.contains(&window_id) {
       pending_redraw.push(window_id);
     }
-    pump_trace(format_args!("redraw queued count={}", pending_redraw.len()));
     unsafe {
       let rl = CFRunLoopGetMain();
       CFRunLoopWakeUp(rl);
@@ -508,14 +447,11 @@ impl AppState {
   }
 
   pub fn handle_redraw(window_id: WindowId) {
-    Self::trace_state("native redraw callback begin");
     HANDLER.handle_nonuser_event(EventWrapper::StaticEvent(Event::RedrawRequested(window_id)));
 
     if !HANDLER.skip_before_wait_once.load(Ordering::Acquire) && HANDLER.take_stop_on_redraw() {
-      pump_trace(format_args!("pump stop reason=redraw"));
       stop_app_immediately();
     }
-    Self::trace_state("native redraw callback end");
   }
 
   pub fn queue_event(wrapper: EventWrapper) {
@@ -523,7 +459,6 @@ impl AppState {
       panic!("Event queued from different thread: {:#?}", wrapper);
     }
     HANDLER.events().push_back(wrapper);
-    pump_trace(format_args!("event queued count={}", HANDLER.events().len()));
   }
 
   pub fn queue_events(mut wrappers: VecDeque<EventWrapper>) {
@@ -534,7 +469,6 @@ impl AppState {
   }
 
   pub fn cleared(panic_info: Weak<PanicInfo>) {
-    Self::trace_state("CFRunLoopBeforeWaiting cleared begin");
     let panic_info = panic_info
       .upgrade()
       .expect("The panic info must exist here. This failure indicates a developer error.");
@@ -544,7 +478,6 @@ impl AppState {
       || !HANDLER.has_callback()
       || HANDLER.get_in_callback()
     {
-      Self::trace_state("CFRunLoopBeforeWaiting cleared skipped");
       return;
     }
     HANDLER.set_in_callback(true);
@@ -569,10 +502,6 @@ impl AppState {
     };
 
     if should_exit || should_stop_before_wait {
-      pump_trace(format_args!(
-        "pump stop reason={}",
-        if should_exit { "real_exit" } else { "before_wait" }
-      ));
       stop_app_immediately();
     }
     HANDLER.update_start_time();
@@ -583,7 +512,6 @@ impl AppState {
       (_, ControlFlow::WaitUntil(instant)) => HANDLER.waker().start_at(instant),
       (_, ControlFlow::Poll) => HANDLER.waker().start(),
     }
-    Self::trace_state("CFRunLoopBeforeWaiting cleared end");
   }
 }
 
@@ -645,6 +573,5 @@ fn apply_activation_policy(app_delegate: &Object) {
       ActivationPolicy::Accessory => NSApplicationActivationPolicy::Accessory,
       ActivationPolicy::Prohibited => NSApplicationActivationPolicy::Prohibited,
     });
-    pump_trace(format_args!("activation policy applied policy={act_pol:?}"));
   }
 }
