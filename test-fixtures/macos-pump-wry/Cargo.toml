@@ -1,0 +1,16 @@
+[package]
+name = "macos-pump-wry"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+image = "0.25"
+objc2 = "0.6"
+tao = { path = "../..", features = ["rwh_06"] }
+wry = "0.55.1"
+
+[patch.crates-io]
+tao = { path = "../.." }
