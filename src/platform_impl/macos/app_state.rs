@@ -131,7 +131,10 @@ struct Handler {
   pending_events: Mutex<VecDeque<EventWrapper>>,
   pending_redraw: Mutex<Vec<WindowId>>,
   waker: Mutex<EventLoopWaker>,
-  pump_stop_requested: AtomicBool,
+  stop_on_launch: AtomicBool,
+  stop_before_wait: AtomicBool,
+  stop_after_wait: AtomicBool,
+  stop_on_redraw: AtomicBool,
 }
 
 unsafe impl Send for Handler {}
@@ -256,16 +259,41 @@ impl Handler {
     }
   }
 
-  fn request_pump_stop(&self) {
-    self.pump_stop_requested.store(true, Ordering::Release);
+  fn prepare_pump(&self) {
+    self.stop_on_launch.store(false, Ordering::Release);
+    self.stop_before_wait.store(false, Ordering::Release);
+    self.stop_after_wait.store(false, Ordering::Release);
+    self.stop_on_redraw.store(false, Ordering::Release);
+
+    if self.is_ready() {
+      self.stop_before_wait.store(true, Ordering::Release);
+      self.stop_on_redraw.store(true, Ordering::Release);
+    } else {
+      self.stop_on_launch.store(true, Ordering::Release);
+    }
   }
 
-  fn take_pump_stop(&self) -> bool {
-    self.pump_stop_requested.swap(false, Ordering::AcqRel)
+  fn clear_pump_state(&self) {
+    self.stop_on_launch.store(false, Ordering::Release);
+    self.stop_before_wait.store(false, Ordering::Release);
+    self.stop_after_wait.store(false, Ordering::Release);
+    self.stop_on_redraw.store(false, Ordering::Release);
   }
 
-  fn clear_pump_stop(&self) {
-    self.pump_stop_requested.store(false, Ordering::Release);
+  fn take_stop_on_launch(&self) -> bool {
+    self.stop_on_launch.swap(false, Ordering::AcqRel)
+  }
+
+  fn take_stop_before_wait(&self) -> bool {
+    self.stop_before_wait.swap(false, Ordering::AcqRel)
+  }
+
+  fn take_stop_after_wait(&self) -> bool {
+    self.stop_after_wait.swap(false, Ordering::AcqRel)
+  }
+
+  fn take_stop_on_redraw(&self) -> bool {
+    self.stop_on_redraw.swap(false, Ordering::AcqRel)
   }
 }
 
@@ -282,12 +310,16 @@ impl AppState {
     }));
   }
 
-  pub fn request_pump_stop() {
-    HANDLER.request_pump_stop();
+  pub fn prepare_pump() {
+    HANDLER.prepare_pump();
   }
 
-  pub fn clear_pump_stop() {
-    HANDLER.clear_pump_stop();
+  pub fn clear_pump_state() {
+    HANDLER.clear_pump_state();
+  }
+
+  pub fn is_launched() -> bool {
+    HANDLER.is_ready()
   }
 
   pub fn should_exit() -> bool {
@@ -333,6 +365,10 @@ impl AppState {
       StartCause::Init,
     )));
     HANDLER.set_in_callback(false);
+
+    if HANDLER.take_stop_on_launch() {
+      stop_app_immediately();
+    }
   }
 
   pub fn open_urls(urls: Vec<url::Url>) {
@@ -353,6 +389,12 @@ impl AppState {
     if panic_info.is_panicking() || !HANDLER.is_ready() || HANDLER.get_in_callback() {
       return;
     }
+
+    if HANDLER.take_stop_after_wait() {
+      stop_app_immediately();
+      return;
+    }
+
     let start = HANDLER.get_start_time().unwrap();
     let cause = match HANDLER.get_control_flow_and_update_prev() {
       ControlFlow::Poll => StartCause::Poll,
@@ -394,6 +436,10 @@ impl AppState {
 
   pub fn handle_redraw(window_id: WindowId) {
     HANDLER.handle_nonuser_event(EventWrapper::StaticEvent(Event::RedrawRequested(window_id)));
+
+    if HANDLER.take_stop_on_redraw() {
+      stop_app_immediately();
+    }
   }
 
   pub fn queue_event(wrapper: EventWrapper) {
@@ -429,21 +475,12 @@ impl AppState {
     }
     HANDLER.handle_nonuser_event(EventWrapper::StaticEvent(Event::RedrawEventsCleared));
     HANDLER.set_in_callback(false);
+
     let should_exit = HANDLER.should_exit();
-    let should_stop_pump = HANDLER.take_pump_stop();
+    let should_stop_before_wait = HANDLER.take_stop_before_wait();
 
-    if should_exit || should_stop_pump {
-      unsafe {
-        let mtm = MainThreadMarker::new().unwrap();
-        let app = NSApp(mtm);
-        let _pool = NSAutoreleasePool::new();
-
-        let () = msg_send![&app, stop: nil];
-
-        // NSApplication::stop does not necessarily take effect until another
-        // event is received.
-        post_dummy_event(&app);
-      };
+    if should_exit || should_stop_before_wait {
+      stop_app_immediately();
     }
     HANDLER.update_start_time();
     match HANDLER.get_old_and_new_control_flow() {
@@ -487,6 +524,20 @@ unsafe fn window_activation_hack(ns_app: &NSApplication) {
     }
   }
 }
+fn stop_app_immediately() {
+  unsafe {
+    let mtm = MainThreadMarker::new().unwrap();
+    let app = NSApp(mtm);
+    let _pool = NSAutoreleasePool::new();
+
+    let () = msg_send![&app, stop: nil];
+
+    // NSApplication::stop does not take effect immediately unless another
+    // event wakes the application event loop.
+    post_dummy_event(&app);
+  }
+}
+
 fn apply_activation_policy(app_delegate: &Object) {
   unsafe {
     let mtm = MainThreadMarker::new().unwrap();
