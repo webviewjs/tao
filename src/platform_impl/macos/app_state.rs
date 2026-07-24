@@ -154,6 +154,8 @@ struct Handler {
   stop_before_wait: AtomicBool,
   stop_after_wait: AtomicBool,
   stop_on_redraw: AtomicBool,
+  // A pump must pass one idle boundary so AppKit sources can run before it returns.
+  skip_before_wait_once: AtomicBool,
 }
 
 unsafe impl Send for Handler {}
@@ -174,6 +176,10 @@ impl Handler {
 
   fn is_ready(&self) -> bool {
     self.ready.load(Ordering::Acquire)
+  }
+
+  fn has_callback(&self) -> bool {
+    self.callback.lock().unwrap().is_some()
   }
 
   fn set_ready(&self) {
@@ -286,6 +292,7 @@ impl Handler {
 
     if self.is_ready() {
       self.stop_before_wait.store(true, Ordering::Release);
+      self.skip_before_wait_once.store(true, Ordering::Release);
       self.stop_on_redraw.store(true, Ordering::Release);
     } else {
       self.stop_on_launch.store(true, Ordering::Release);
@@ -297,6 +304,7 @@ impl Handler {
     self.stop_before_wait.store(false, Ordering::Release);
     self.stop_after_wait.store(false, Ordering::Release);
     self.stop_on_redraw.store(false, Ordering::Release);
+    self.skip_before_wait_once.store(false, Ordering::Release);
   }
 
   fn take_stop_on_launch(&self) -> bool {
@@ -443,7 +451,11 @@ impl AppState {
       .upgrade()
       .expect("The panic info must exist here. This failure indicates a developer error.");
     // Return when in callback due to https://github.com/rust-windowing/winit/issues/1779
-    if panic_info.is_panicking() || !HANDLER.is_ready() || HANDLER.get_in_callback() {
+    if panic_info.is_panicking()
+      || !HANDLER.is_ready()
+      || !HANDLER.has_callback()
+      || HANDLER.get_in_callback()
+    {
       Self::trace_state("CFRunLoopAfterWaiting wakeup skipped");
       return;
     }
@@ -499,7 +511,7 @@ impl AppState {
     Self::trace_state("native redraw callback begin");
     HANDLER.handle_nonuser_event(EventWrapper::StaticEvent(Event::RedrawRequested(window_id)));
 
-    if HANDLER.take_stop_on_redraw() {
+    if !HANDLER.skip_before_wait_once.load(Ordering::Acquire) && HANDLER.take_stop_on_redraw() {
       pump_trace(format_args!("pump stop reason=redraw"));
       stop_app_immediately();
     }
@@ -527,7 +539,11 @@ impl AppState {
       .upgrade()
       .expect("The panic info must exist here. This failure indicates a developer error.");
     // Return when in callback due to https://github.com/rust-windowing/winit/issues/1779
-    if panic_info.is_panicking() || !HANDLER.is_ready() || HANDLER.get_in_callback() {
+    if panic_info.is_panicking()
+      || !HANDLER.is_ready()
+      || !HANDLER.has_callback()
+      || HANDLER.get_in_callback()
+    {
       Self::trace_state("CFRunLoopBeforeWaiting cleared skipped");
       return;
     }
@@ -544,7 +560,13 @@ impl AppState {
     HANDLER.set_in_callback(false);
 
     let should_exit = HANDLER.should_exit();
-    let should_stop_before_wait = HANDLER.take_stop_before_wait();
+    let should_stop_before_wait = if HANDLER.skip_before_wait_once.swap(false, Ordering::AcqRel) {
+      // Avoid sleeping even when the callback selected ControlFlow::Wait.
+      unsafe { CFRunLoopWakeUp(CFRunLoopGetMain()) };
+      false
+    } else {
+      HANDLER.take_stop_before_wait()
+    };
 
     if should_exit || should_stop_before_wait {
       pump_trace(format_args!(
