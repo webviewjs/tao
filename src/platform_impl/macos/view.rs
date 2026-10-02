@@ -28,7 +28,7 @@ use objc2_foundation::{
   ns_string, MainThreadMarker, NSAttributedString, NSInteger, NSMutableAttributedString, NSPoint,
   NSRange, NSRect, NSSize, NSString, NSUInteger,
 };
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use crate::{
   dpi::LogicalPosition,
@@ -136,7 +136,7 @@ struct ViewClass(&'static Class);
 unsafe impl Send for ViewClass {}
 unsafe impl Sync for ViewClass {}
 
-static VIEW_CLASS: Lazy<ViewClass> = Lazy::new(|| unsafe {
+static VIEW_CLASS: LazyLock<ViewClass> = LazyLock::new(|| unsafe {
   let superclass = class!(NSView);
   let mut decl =
     ClassDecl::new(CStr::from_bytes_with_nul(b"TaoView\0").unwrap(), superclass).unwrap();
@@ -1178,5 +1178,20 @@ pub unsafe fn inset_traffic_lights(window: &NSWindow, position: LogicalPosition<
     let mut rect = NSView::frame(&button);
     rect.origin.x = x + (i as f64 * space_between);
     button.setFrameOrigin(rect.origin);
+  }
+}
+
+// Re-apply the custom traffic light inset stored on the view, if one was set.
+// AppKit resets the buttons to their default position on some events (title
+// change, leaving fullscreen) without triggering a `drawRect:`, so callers use
+// this to restore the configured position afterwards (#13044, #15451).
+pub unsafe fn reapply_traffic_light_inset(ns_window: &NSWindow, ns_view: &NSView) {
+  let state_ptr: *mut c_void = *ns_view.get_ivar("taoState");
+  if state_ptr.is_null() {
+    return;
+  }
+  let state = &*(state_ptr as *mut ViewState);
+  if let Some(position) = state.traffic_light_inset {
+    inset_traffic_lights(ns_window, position);
   }
 }

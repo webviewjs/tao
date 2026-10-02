@@ -18,7 +18,7 @@ use objc2_app_kit::{
   self as appkit, NSApplicationPresentationOptions, NSPasteboard, NSView, NSWindow,
 };
 use objc2_foundation::{ns_string, NSArray, NSAutoreleasePool, NSString, NSUInteger};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use crate::{
   dpi::{LogicalPosition, LogicalSize},
@@ -29,7 +29,7 @@ use crate::{
     event::{EventProxy, EventWrapper},
     ffi::{id, nil, BOOL, NO, YES},
     util::{self, IdRef},
-    view::ViewState,
+    view::{reapply_traffic_light_inset, ViewState},
     window::{get_ns_theme, get_window_id, UnownedWindow},
   },
   window::{Fullscreen, WindowId},
@@ -159,7 +159,7 @@ struct WindowDelegateClass(*const Class);
 unsafe impl Send for WindowDelegateClass {}
 unsafe impl Sync for WindowDelegateClass {}
 
-static WINDOW_DELEGATE_CLASS: Lazy<WindowDelegateClass> = Lazy::new(|| unsafe {
+static WINDOW_DELEGATE_CLASS: LazyLock<WindowDelegateClass> = LazyLock::new(|| unsafe {
   let superclass = class!(NSResponder);
   let mut decl = ClassDecl::new(
     CStr::from_bytes_with_nul(b"TaoWindowDelegate\0").unwrap(),
@@ -605,6 +605,9 @@ extern "C" fn window_did_exit_fullscreen(this: &Object, _: Sel, _: id) {
       if let Some(target_fullscreen) = target_fullscreen {
         window.set_fullscreen(target_fullscreen);
       }
+      // Leaving fullscreen resets the traffic light buttons to their default
+      // position without a `drawRect:`, so re-apply the custom inset (#15451).
+      unsafe { reapply_traffic_light_inset(&window.ns_window, &window.ns_view) };
     });
     state.emit_resize_event();
     state.emit_move_event();
