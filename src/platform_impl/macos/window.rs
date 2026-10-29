@@ -47,13 +47,13 @@ use core_graphics::{
 use objc2::{define_class, msg_send, rc::Retained, ClassType, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
   self as appkit, NSApp, NSApplicationPresentationOptions, NSBackingStoreType, NSColor, NSEvent,
-  NSEventSubtype, NSEventType, NSRequestUserAttentionType, NSResponder, NSScreen, NSView, NSWindow,
-  NSWindowButton, NSWindowCollectionBehavior, NSWindowFullScreenButton, NSWindowOrderingMode,
-  NSWindowSharingType, NSWindowStyleMask,
+  NSEventModifierFlags, NSEventSubtype, NSEventType, NSRequestUserAttentionType, NSResponder,
+  NSScreen, NSView, NSWindow, NSWindowButton, NSWindowCollectionBehavior, NSWindowFullScreenButton,
+  NSWindowOrderingMode, NSWindowSharingType, NSWindowStyleMask,
 };
 use objc2_foundation::{
   ns_string, MainThreadMarker, NSArray, NSAutoreleasePool, NSDictionary, NSInteger, NSNumber,
-  NSObject, NSPoint, NSRect, NSSize, NSString,
+  NSObject, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
 };
 
 use super::{
@@ -902,27 +902,32 @@ impl UnownedWindow {
   #[inline]
   pub fn drag_window(&self) -> Result<(), ExternalError> {
     unsafe {
-      let mtm = MainThreadMarker::new_unchecked();
-      let Some(mut event) = NSApp(mtm).currentEvent() else {
-        // `currentEvent` is nil when no event is being dispatched, e.g. when the
-        // drag is requested asynchronously after the mouse-down was handled.
-        log::warn!("Cannot drag the window: there is no current event");
+      // Only initiate dragging while the primary mouse button is pressed.
+      if NSEvent::pressedMouseButtons() & 1 == 0 {
+        return Ok(());
+      }
+
+      // Convert the cursor position from screen to window coordinates.
+      let location = self
+        .ns_window
+        .convertPointFromScreen(NSEvent::mouseLocation());
+
+      // The current AppKit event may not be the original mouse-down
+      // because dragging can be requested asynchronously.
+      let Some(event) = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+        NSEventType::LeftMouseDown,
+        location,
+        NSEventModifierFlags::empty(),
+        NSProcessInfo::processInfo().systemUptime(),
+        self.ns_window.windowNumber(),
+        None,
+        0,
+        1,
+        1.0,
+      ) else {
+        log::warn!("Cannot drag the window: failed to create mouse-down event");
         return Ok(());
       };
-
-      if event.r#type().0 == 0x15 {
-        event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-          NSEventType::LeftMouseDown,
-          NSEvent::mouseLocation(),
-          event.modifierFlags(),
-          event.timestamp(),
-          event.windowNumber(),
-          None,
-          NSEventSubtype::WindowExposed.0 as NSInteger,
-          1,
-          1.0,
-        ).unwrap();
-      }
 
       self.ns_window.performWindowDragWithEvent(&event);
     }
