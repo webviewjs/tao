@@ -16,7 +16,7 @@ use std::{
   time::Instant,
 };
 
-use objc2::{msg_send, rc::Retained, runtime::AnyObject as Object};
+use objc2::runtime::AnyObject as Object;
 use objc2_app_kit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSWindow};
 use objc2_foundation::{MainThreadMarker, NSAutoreleasePool, NSSize};
 use std::sync::LazyLock;
@@ -31,7 +31,6 @@ use crate::{
     platform::{
       event::{EventProxy, EventWrapper},
       event_loop::{post_dummy_event, PanicInfo},
-      ffi::{id, nil},
       observer::{CFRunLoopGetMain, CFRunLoopWakeUp, EventLoopWaker},
       util::{self, Never},
       window::get_window_id,
@@ -491,7 +490,6 @@ impl AppState {
     }
     HANDLER.handle_nonuser_event(EventWrapper::StaticEvent(Event::RedrawEventsCleared));
     HANDLER.set_in_callback(false);
-
     let should_exit = HANDLER.should_exit();
     let should_stop_before_wait = if HANDLER.skip_before_wait_once.swap(false, Ordering::AcqRel) {
       // Avoid sleeping even when the callback selected ControlFlow::Wait.
@@ -526,15 +524,8 @@ impl AppState {
 unsafe fn window_activation_hack(ns_app: &NSApplication) {
   // Get the application's windows
   // TODO: Proper ordering of the windows
-  let ns_windows: id = msg_send![ns_app, windows];
-  let ns_enumerator: id = msg_send![ns_windows, objectEnumerator];
-  loop {
-    // Enumerate over the windows
-    let ns_window: Option<Retained<NSWindow>> = msg_send![ns_enumerator, nextObject];
-    if ns_window.is_none() {
-      break;
-    }
-    let ns_window = ns_window.unwrap();
+  let ns_windows = ns_app.windows();
+  for ns_window in ns_windows {
     // And call `makeKeyAndOrderFront` if it was called on the window in `UnownedWindow::new`
     // This way we preserve the user's desired initial visiblity status
     // TODO: Also filter on the type/"level" of the window, and maybe other things?
@@ -552,7 +543,7 @@ fn stop_app_immediately() {
     let app = NSApp(mtm);
     let _pool = NSAutoreleasePool::new();
 
-    let () = msg_send![&app, stop: nil];
+    app.stop(None);
 
     // NSApplication::stop does not take effect immediately unless another
     // event wakes the application event loop.
