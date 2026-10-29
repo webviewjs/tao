@@ -47,13 +47,13 @@ use core_graphics::{
 use objc2::{define_class, msg_send, rc::Retained, ClassType, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
   self as appkit, NSApp, NSApplicationPresentationOptions, NSBackingStoreType, NSColor, NSEvent,
-  NSEventSubtype, NSEventType, NSRequestUserAttentionType, NSResponder, NSScreen, NSView, NSWindow,
-  NSWindowButton, NSWindowCollectionBehavior, NSWindowFullScreenButton, NSWindowOrderingMode,
-  NSWindowSharingType, NSWindowStyleMask,
+  NSEventModifierFlags, NSEventSubtype, NSEventType, NSRequestUserAttentionType, NSResponder,
+  NSScreen, NSView, NSWindow, NSWindowButton, NSWindowCollectionBehavior, NSWindowFullScreenButton,
+  NSWindowOrderingMode, NSWindowSharingType, NSWindowStyleMask,
 };
 use objc2_foundation::{
   ns_string, MainThreadMarker, NSArray, NSAutoreleasePool, NSDictionary, NSInteger, NSNumber,
-  NSObject, NSPoint, NSRect, NSSize, NSString,
+  NSObject, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
 };
 
 use super::{
@@ -899,30 +899,66 @@ impl UnownedWindow {
     }
   }
 
+  // #[inline]
+  // pub fn drag_window(&self) -> Result<(), ExternalError> {
+  //   unsafe {
+  //     let mtm = MainThreadMarker::new_unchecked();
+  //     let Some(mut event) = NSApp(mtm).currentEvent() else {
+  //       // `currentEvent` is nil when no event is being dispatched, e.g. when the
+  //       // drag is requested asynchronously after the mouse-down was handled.
+  //       log::warn!("Cannot drag the window: there is no current event");
+  //       return Ok(());
+  //     };
+
+  //     if event.r#type().0 == 0x15 {
+  //       event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+  //         NSEventType::LeftMouseDown,
+  //         NSEvent::mouseLocation(),
+  //         event.modifierFlags(),
+  //         event.timestamp(),
+  //         event.windowNumber(),
+  //         None,
+  //         NSEventSubtype::WindowExposed.0 as NSInteger,
+  //         1,
+  //         1.0,
+  //       ).unwrap();
+  //     }
+
+  //     self.ns_window.performWindowDragWithEvent(&event);
+  //   }
+
+  //   Ok(())
+  // }
+
   #[inline]
   pub fn drag_window(&self) -> Result<(), ExternalError> {
     unsafe {
-      let mtm = MainThreadMarker::new_unchecked();
-      let Some(mut event) = NSApp(mtm).currentEvent() else {
-        // `currentEvent` is nil when no event is being dispatched, e.g. when the
-        // drag is requested asynchronously after the mouse-down was handled.
-        log::warn!("Cannot drag the window: there is no current event");
+      // Do not initiate a drag if the primary mouse button
+      // has already been released.
+      if NSEvent::pressedMouseButtons() & 1 == 0 {
         return Ok(());
-      };
-
-      if event.r#type().0 == 0x15 {
-        event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-          NSEventType::LeftMouseDown,
-          NSEvent::mouseLocation(),
-          event.modifierFlags(),
-          event.timestamp(),
-          event.windowNumber(),
-          None,
-          NSEventSubtype::WindowExposed.0 as NSInteger,
-          1,
-          1.0,
-        ).unwrap();
       }
+
+      // NSEvent::mouseLocation() is in screen coordinates.
+      // performWindowDragWithEvent expects a window-relative position.
+      let location = self
+        .ns_window
+        .convertPointFromScreen(NSEvent::mouseLocation());
+
+      // Synthesize a valid mouse-down event rather than relying
+      // on NSApp.currentEvent, which may be unrelated to the click.
+      let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+      NSEventType::LeftMouseDown,
+      location,
+      NSEventModifierFlags::empty(),
+      NSProcessInfo::processInfo().systemUptime(),
+      self.ns_window.windowNumber(),
+      None,
+      0,
+      1,
+      1.0,
+    )
+    .expect("Failed to create mouse-down event");
 
       self.ns_window.performWindowDragWithEvent(&event);
     }
