@@ -915,19 +915,19 @@ impl UnownedWindow {
       // The current AppKit event may not be the original mouse-down
       // because dragging can be requested asynchronously.
       let Some(event) = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-      NSEventType::LeftMouseDown,
-      location,
-      NSEventModifierFlags::empty(),
-      NSProcessInfo::processInfo().systemUptime(),
-      self.ns_window.windowNumber(),
-      None,
-      0,
-      1,
-      1.0,
-    ) else {
-      log::warn!("Cannot drag the window: failed to create mouse-down event");
-      return Ok(());
-    };
+        NSEventType::LeftMouseDown,
+        location,
+        NSEventModifierFlags::empty(),
+        NSProcessInfo::processInfo().systemUptime(),
+        self.ns_window.windowNumber(),
+        None,
+        0,
+        1,
+        1.0,
+      ) else {
+        log::warn!("Cannot drag the window: failed to create mouse-down event");
+        return Ok(());
+      };
 
       self.ns_window.performWindowDragWithEvent(&event);
     }
