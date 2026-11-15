@@ -144,6 +144,7 @@ pub struct EventLoop<T: 'static> {
   pub(crate) delegate: Retained<AppDelegate>,
 
   window_target: Rc<RootWindowTarget<T>>,
+  _observers: ControlFlowObservers,
   panic_info: Rc<PanicInfo>,
 
   /// We make sure that the callback closure is dropped during a panic
@@ -161,7 +162,7 @@ pub(crate) struct PlatformSpecificEventLoopAttributes {}
 impl<T> EventLoop<T> {
   pub(crate) fn new(_: &PlatformSpecificEventLoopAttributes) -> Self {
     let panic_info: Rc<PanicInfo> = Default::default();
-    setup_control_flow_observers(Rc::downgrade(&panic_info));
+    let observers = setup_control_flow_observers(Rc::downgrade(&panic_info));
 
     let delegate = unsafe {
       let mtm =
@@ -185,6 +186,7 @@ impl<T> EventLoop<T> {
         p: Default::default(),
         _marker: PhantomData,
       }),
+      _observers: observers,
       panic_info,
       _callback: None,
     }
