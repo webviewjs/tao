@@ -235,6 +235,7 @@ fn create_window(
 
     let state = WindowState {
       focusable: AtomicBool::new(attrs.focusable),
+      maximizable: AtomicBool::new(attrs.maximizable),
     };
     let ns_window = TaoWindow::alloc(mtm).set_ivars(state);
     let ns_window: Retained<TaoWindow> = msg_send![
@@ -311,9 +312,9 @@ fn create_window(
       ns_window.setTabbingIdentifier(&NSString::from_str(tabbing_identifier));
     }
 
-    if !pl_attrs.has_shadow {
-      ns_window.setHasShadow(false);
-    }
+    // Borderless windows with no other style bits default to having no shadow.
+    // Apply both values explicitly rather than relying on AppKit's style defaults.
+    ns_window.setHasShadow(pl_attrs.has_shadow);
     if attrs.position.is_none() {
       ns_window.center();
     }
@@ -389,6 +390,7 @@ pub(super) fn set_ns_theme(theme: Option<Theme>) {
 #[derive(Debug)]
 pub(super) struct WindowState {
   pub(super) focusable: AtomicBool,
+  pub(super) maximizable: AtomicBool,
 }
 
 define_class!(
@@ -400,6 +402,16 @@ define_class!(
   pub(super) struct TaoWindow;
 
   impl TaoWindow {
+    #[unsafe(method(setStyleMask:))]
+    fn set_style_mask(&self, mask: NSWindowStyleMask) {
+      unsafe {
+        let _: () = msg_send![super(self), setStyleMask: mask];
+        if let Some(button) = self.standardWindowButton(NSWindowButton::ZoomButton) {
+          button.setEnabled(self.ivars().maximizable.load(Ordering::Relaxed));
+        }
+      }
+    }
+
     #[unsafe(method(canBecomeMainWindow))]
     fn can_become_main_window(&self) -> bool {
       self.ivars().focusable.load(Ordering::Relaxed)
@@ -796,6 +808,11 @@ impl UnownedWindow {
 
   #[inline]
   pub fn set_maximizable(&self, maximizable: bool) {
+    self
+      .ns_window
+      .ivars()
+      .maximizable
+      .store(maximizable, Ordering::Relaxed);
     unsafe {
       if let Some(button) = self
         .ns_window
@@ -1085,7 +1102,7 @@ impl UnownedWindow {
       {
         button.isEnabled()
       } else {
-        false
+        self.ns_window.ivars().maximizable.load(Ordering::Relaxed)
       }
     }
   }

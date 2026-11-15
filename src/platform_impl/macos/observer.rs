@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
-  self,
+  self, mem,
   os::raw::*,
   panic::{AssertUnwindSafe, UnwindSafe},
   ptr,
@@ -32,6 +32,11 @@ extern "C" {
     callout: CFRunLoopObserverCallBack,
     context: *mut CFRunLoopObserverContext,
   ) -> CFRunLoopObserverRef;
+  pub fn CFRunLoopRemoveObserver(
+    rl: CFRunLoopRef,
+    observer: CFRunLoopObserverRef,
+    mode: CFRunLoopMode,
+  );
   pub fn CFRunLoopAddObserver(
     rl: CFRunLoopRef,
     observer: CFRunLoopObserverRef,
@@ -210,7 +215,7 @@ impl RunLoop {
     priority: CFIndex,
     handler: CFRunLoopObserverCallBack,
     context: *mut CFRunLoopObserverContext,
-  ) {
+  ) -> CFRunLoopObserverRef {
     let observer = CFRunLoopObserverCreate(
       ptr::null_mut(),
       flags,
@@ -220,31 +225,64 @@ impl RunLoop {
       context,
     );
     CFRunLoopAddObserver(self.0, observer, kCFRunLoopCommonModes);
+    observer
   }
 }
 
-pub fn setup_control_flow_observers(panic_info: Weak<PanicInfo>) {
+/// Keep CF observers scoped to their event loop, including in embedding hosts
+/// that continue driving the main run loop after Tao has been dropped.
+pub struct ControlFlowObservers([CFRunLoopObserverRef; 2]);
+
+impl Drop for ControlFlowObservers {
+  fn drop(&mut self) {
+    unsafe {
+      for observer in self.0 {
+        CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, kCFRunLoopCommonModes);
+        CFRelease(observer as _);
+      }
+    }
+  }
+}
+
+pub fn setup_control_flow_observers(panic_info: Weak<PanicInfo>) -> ControlFlowObservers {
+  extern "C-unwind" fn retain(info: *const c_void) -> *const c_void {
+    unsafe {
+      let original = Weak::from_raw(info as *const PanicInfo);
+      let retained = Weak::into_raw(original.clone());
+      mem::forget(original);
+      retained as _
+    }
+  }
+
+  extern "C-unwind" fn release(info: *const c_void) {
+    unsafe { drop(Weak::from_raw(info as *const PanicInfo)) }
+  }
+
   unsafe {
     let mut context = CFRunLoopObserverContext {
       info: Weak::into_raw(panic_info) as *mut _,
       version: 0,
-      retain: None,
-      release: None,
+      retain: Some(retain),
+      release: Some(release),
       copyDescription: None,
     };
     let run_loop = RunLoop::get();
-    run_loop.add_observer(
+    let begin = run_loop.add_observer(
       kCFRunLoopEntry | kCFRunLoopAfterWaiting,
       CFIndex::MIN,
       control_flow_begin_handler,
       &mut context as *mut _,
     );
-    run_loop.add_observer(
+    let end = run_loop.add_observer(
       kCFRunLoopExit | kCFRunLoopBeforeWaiting,
       CFIndex::MAX,
       control_flow_end_handler,
       &mut context as *mut _,
     );
+    // Each observer retained its own weak reference. Release the temporary
+    // reference used to initialize their shared context.
+    drop(Weak::from_raw(context.info as *const PanicInfo));
+    ControlFlowObservers([begin, end])
   }
 }
 

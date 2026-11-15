@@ -1487,6 +1487,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "objc2",
+ "objc2-foundation",
  "tao",
  "wry",
 ]

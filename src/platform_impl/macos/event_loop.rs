@@ -16,7 +16,7 @@ use std::{
 
 use crate::platform::macos::PumpStatus;
 use crossbeam_channel::{self as channel, Receiver, Sender};
-use objc2::{msg_send, rc::Retained};
+use objc2::{msg_send, rc::Retained, runtime::ProtocolObject, ClassType};
 use objc2_app_kit::{NSApp, NSApplication, NSEventModifierFlags, NSEventSubtype, NSEventType};
 use objc2_foundation::{MainThreadMarker, NSAutoreleasePool, NSInteger, NSPoint, NSTimeInterval};
 
@@ -28,13 +28,13 @@ use crate::{
   monitor::MonitorHandle as RootMonitorHandle,
   platform_impl::{
     platform::{
-      app::APP_CLASS,
-      app_delegate::APP_DELEGATE_CLASS,
+      app::TaoApp,
+      app_delegate::AppDelegate,
       app_state::AppState,
       ffi::{id, nil, YES},
       monitor::{self, MonitorHandle},
       observer::*,
-      util::{self, IdRef},
+      util,
     },
     set_badge_label, set_progress_indicator,
   },
@@ -141,9 +141,10 @@ impl<T: 'static> EventLoopWindowTarget<T> {
 }
 
 pub struct EventLoop<T: 'static> {
-  pub(crate) delegate: IdRef,
+  pub(crate) delegate: Retained<AppDelegate>,
 
   window_target: Rc<RootWindowTarget<T>>,
+  _observers: ControlFlowObservers,
   panic_info: Rc<PanicInfo>,
 
   /// We make sure that the callback closure is dropped during a panic
@@ -161,22 +162,21 @@ pub(crate) struct PlatformSpecificEventLoopAttributes {}
 impl<T> EventLoop<T> {
   pub(crate) fn new(_: &PlatformSpecificEventLoopAttributes) -> Self {
     let panic_info: Rc<PanicInfo> = Default::default();
-    setup_control_flow_observers(Rc::downgrade(&panic_info));
+    let observers = setup_control_flow_observers(Rc::downgrade(&panic_info));
 
     let delegate = unsafe {
-      if !util::is_main_thread() {
-        panic!("On macOS, `EventLoop` must be created on the main thread!");
-      }
+      let mtm =
+        MainThreadMarker::new().expect("on macOS, `EventLoop` must be created on the main thread!");
 
       // This must be done before `NSApp()` (equivalent to sending
       // `sharedApplication`) is called anywhere else, or we'll end up
       // with the wrong `NSApplication` class and the wrong thread could
       // be marked as main.
-      let app: id = msg_send![APP_CLASS.0, sharedApplication];
+      let app: Retained<NSApplication> = msg_send![TaoApp::class(), sharedApplication];
 
-      let delegate = IdRef::new(msg_send![APP_DELEGATE_CLASS.0, new]);
+      let delegate = AppDelegate::new(mtm);
       let _pool = NSAutoreleasePool::new();
-      let _: () = msg_send![app, setDelegate:*delegate];
+      app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
       delegate
     };
 
@@ -186,6 +186,7 @@ impl<T> EventLoop<T> {
         p: Default::default(),
         _marker: PhantomData,
       }),
+      _observers: observers,
       panic_info,
       _callback: None,
     }
