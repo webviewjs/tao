@@ -312,9 +312,9 @@ fn create_window(
       ns_window.setTabbingIdentifier(&NSString::from_str(tabbing_identifier));
     }
 
-    if !pl_attrs.has_shadow {
-      ns_window.setHasShadow(false);
-    }
+    // Borderless windows with no other style bits default to having no shadow.
+    // Apply both values explicitly rather than relying on AppKit's style defaults.
+    ns_window.setHasShadow(pl_attrs.has_shadow);
     if attrs.position.is_none() {
       ns_window.center();
     }

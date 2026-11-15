@@ -49,3 +49,20 @@ NSApplication.run(), stop conditions and the one-boundary source allowance
 remain unchanged; there is insufficient evidence here to replace them. The
 loading behavior still needs testing on macOS 26 with the affected Node addon;
 this Rust fixture does not validate libuv/N-API integration.
+
+## Shadow regression
+
+```sh
+cargo run --bin shadows
+```
+
+Checks all 16 combinations of decorations, resizable, minimizable and shadow,
+then toggles style flags and the explicit shadow value. On macOS 27.0.1 the
+unmodified merge failed the reported all-false-style/true-shadow combination.
+Explicitly applying both shadow values passes the matrix. AppKit preserved the
+explicit value during the tested style mutations, so additional stored shadow
+state or setStyleMask overrides were unnecessary. This checks hasShadow state;
+it does not visually measure the composited shadow.
+
+Neither macOS 15 nor macOS 26 was available locally. Run both fixtures on those
+versions before claiming the original OS-specific reports are resolved.
